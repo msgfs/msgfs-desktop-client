@@ -1,0 +1,17 @@
+{
+  "name": "msgfs-client",
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^14.0.0"
+  },
+  "scripts": {
+    "start": "electron ."
+  },
+  "dependencies": {
+    "electron-log": "^4.4.1",
+    "electron-store": "^8.0.1",
+    "js-sha512": "^0.8.0"
+  }
+}
