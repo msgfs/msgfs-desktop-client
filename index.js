@@ -1,15 +1,20 @@
 require('./lib/strfmt/strfmt');
 const log = require('electron-log');
-const { getKeyList, connectIdentity, createOwnInvite, importIdentityInvite, newIdentity, uploadFile, downloadFile, setDownloadPath} = require('./lib/json-api/json-api');
+const { getKeyList, connectIdentity, createOwnInvite, importIdentityInvite, newIdentity, uploadFile, downloadFile, setDownloadPath,
+  uuid4
+} = require('./lib/json-api/json-api');
+const { getContactList, addContact, removeContact } = require('./lib/contacts')
 const { app, BrowserWindow, Menu, Tray, clipboard } = require('electron')
 const { isFilePath } = require('./lib/utils')
 const { Notification, dialog, shell } = require('electron')
 const fs = require('fs');
 const os = require('os');
 const Store = require('electron-store');
+const prompt = require('electron-prompt');
 const {debug} = require("electron-log");
 const path = require("path");
 const store = new Store();
+const {getFolderForId, fileAlreadyDownloaded} = require("./lib/files")
 
 let rotationSpeed = 0
 let connect = false
@@ -60,7 +65,6 @@ function buildTrayMenu(tray, knownOwners, currentConnections, currentConnections
 
   knownOwners.forEach((el) => {
     let ms = ""
-
     if (currentConnectionsPing[el] !== null && currentConnectionsPing[el] !== undefined) {
       ms = `[${currentConnectionsPing[el]}ms]`
       nActive++;
@@ -79,13 +83,28 @@ function buildTrayMenu(tray, knownOwners, currentConnections, currentConnections
     importIdentitiesInvite.push({...idMenuRecord, click: () => {
       const inviteText = clipboard.readText();
       if (inviteText !== '') {
-        log.info("Import identity", inviteText)
-        importIdentityInvite(el, inviteText, (resp) => {
-          log.info("got response for identity invite: ", resp);
-          if (resp.ok) {
-            showNotification("msgfs", "Identity invite has been imported.");
-          }
-        });
+
+        prompt({
+          title: 'Input contact name',
+          label: 'NAME:',
+          value: `${uuid4()}`,
+          type: 'input'
+        }).then((name) => {
+          if (!name) return
+          log.info("Import identity", inviteText)
+          //const name = 'testName-1';
+          const contactFilePath = addContact(el, name, inviteText)
+          importIdentityInvite(el, contactFilePath, (resp) => {
+            log.info("got response for identity invite: ", resp);
+            if (resp.ok) {
+              showNotification("msgfs", "Identity invite has been imported.");
+            } else {
+              removeContact(el, name)
+            }
+          });
+        })
+
+
       } else {
         showNotification('msgfs', 'not text found in clipboard');
       }
@@ -105,13 +124,16 @@ function buildTrayMenu(tray, knownOwners, currentConnections, currentConnections
 
   const recentFiles = [];
   if (knownFiles !== null && knownFiles !== undefined) {
-    Object.keys(knownFiles).forEach((idFiles, index) => {
-      knownFiles[idFiles].forEach((fl) => {
+    Object.keys(knownFiles).forEach((idFiles) => {
+      const idFolder = getFolderForId(idFiles)
+      Object.keys(knownFiles[idFiles]).forEach((key) => {
+        const fl = knownFiles[idFiles][key]
         if (fl.file !== null && fl.file !== undefined) {
+          const downloaded = fileAlreadyDownloaded(idFolder, fl.file.fileName)
           recentFiles.push({
-            label: `${fl.file.fileName} ${Math.floor(fl.file.fullSize / (1024 * 1024))}MB ✔️`,
+            label: `${fl.file.fileName} ${Math.floor(fl.file.fullSize / (1024 * 1024))}MB` + (downloaded ? ' 🔵' : ' ⚪'),
             click: () => {
-              if (downloadPath) { downloadFile(selectedId, index, downloadPath, () => {
+              if (downloadPath) { downloadFile(selectedId, parseInt(key), idFolder, () => {
                 showNotification("msgfs", `File ${fl.file.fileName} has been downloaded`);
               }) } else {
                 showNotification("msgfs", `Setup download path`);
@@ -126,14 +148,14 @@ function buildTrayMenu(tray, knownOwners, currentConnections, currentConnections
   const recentlyReceivedFilesMenu = [
       ...recentFiles,
       { type: "separator"},
-      downloadPath ? { label: "Open containg folder...", click: () => openDownloadPath() } : { label: "Setup download folder...", click: () => clickDownloadPath() }
+      downloadPath ? { label: "Open download folder...", click: () => openDownloadPath() } : { label: "Setup download folder...", click: () => clickDownloadPath() }
   ];
 
-
-  const contactsMenu = [
-      { label: "my, myself and I", type: "checkbox", checked: true},
-      { label: "demo receiver", type: "checkbox", }
-  ]
+  const contactList = getContactList(knownOwners)
+  const contactsMenu = []
+  Object.keys(contactList).forEach(k => {
+    contactsMenu.push({label: k,  submenu: buildContactSubmenu(contactList[k]) })
+  })
 
   const contextMenu = Menu.buildFromTemplate([
     { label: "Identities", submenu: Menu.buildFromTemplate(identitiesMenu)},
@@ -152,30 +174,57 @@ function buildTrayMenu(tray, knownOwners, currentConnections, currentConnections
   tray.setContextMenu(contextMenu);
 }
 
+const buildContactSubmenu = (contacts) => {
+  const contactsMenu = []
+  Object.keys(contacts).forEach(name => {
+    const data = contacts[name] //TODO: для отправки файлов
+    const contactClickMenu = [
+      { label: "Send file from clipboard", click: () => clickUploadFileClipboard([data.path]) },
+      { label: "Send file", click: () => clickUploadFilePath([data.path]) },
+      { label: "Received files...", submenu: [
+          { label: "No data in protocol"  },
+          { type: "separator"},
+          { label: "Open download folder...", click: () => openDownloadPath() }
+        ] },
+    ]
+    contactsMenu.push({
+      label: name,
+      submenu: contactClickMenu
+    })
+  })
+  return contactsMenu
+}
+
 let win = null
 // Trick for focus
 const appFocus = (callback) => {
   app.focus();
-  if (!win) {
-    win = new BrowserWindow({ width: 100, height: 100, webPreferences: { nativeWindowOpen: true } })
-  } else win.show()
+  win.show()
   setTimeout(() => win.hide(), 1)
   return callback()
 }
 
-const clickUploadFilePath = () => {
+
+
+openDownloadPath = () => {
+
+  //shell.showItemInFolder(downloadPath+"/")
+  shell.openPath(downloadPath+"/")
+}
+
+const clickUploadFilePath = (ids) => {
+  if (!ids) ids = []
   const res = appFocus(() => { return dialog.showOpenDialogSync({properties: ['openFile']}) })
   if (res && res.length > 0) {
     const uploadPath = res[0];
-    uploadFile(selectedId, uploadPath, [selectedId],() => {
+    uploadFile(selectedId, uploadPath, ids,() => {
       showNotification("msgfs", `file "${uploadPath}" uploaded`);
     })
   }
 }
 
-openDownloadPath = () => { shell.showItemInFolder(downloadPath) }
-
-const clickUploadFileClipboard = () => {
+const clickUploadFileClipboard = (ids) => {
+  if (!ids) ids = []
   let uploadPath = null
   if (os.platform() === "win32") {
     const rawFilePath = clipboard.read('FileNameW');
@@ -187,10 +236,9 @@ const clickUploadFileClipboard = () => {
     showNotification("msgfs", `Is not "file-path" in clipboard`);
     return
   }
-  uploadFile(selectedId, uploadPath, [],() => {
+  uploadFile(selectedId, uploadPath, ids,() => {
     showNotification("msgfs", `file "${uploadPath}" uploaded`);
   })
-
 }
 
 const clickDownloadPath = () => {
@@ -204,7 +252,10 @@ const clickDownloadPath = () => {
 }
 
 app.whenReady().then(() => {
-  log.transports.console.level = 'debug';
+  win = new BrowserWindow({ width: 100, height: 100, webPreferences: { nativeWindowOpen: true } })
+  setTimeout(() => win.hide(), 1)
+
+  log.transports.console.level = 'info';
   const tray = new Tray('assets/disconnect.png');
   let knownIdentites = 0
   //setupRotatingIcon(tray);
