@@ -204,7 +204,7 @@ const clickDownloadPath = () => {
 }
 
 app.whenReady().then(() => {
-  log.transports.console.level = 'info';
+  log.transports.console.level = 'debug';
   const tray = new Tray('assets/disconnect.png');
   let knownIdentites = 0
   //setupRotatingIcon(tray);
